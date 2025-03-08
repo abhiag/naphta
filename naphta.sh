@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 
 # NapthaAI Cluster Manager v3.0
 # Full featured management system with menu interface
