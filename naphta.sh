@@ -19,6 +19,24 @@ declare -A CONFIG=(
 )
 
 # --------------------------
+# Logging Functions
+# --------------------------
+log() {
+    local level=$1
+    shift
+    local message="$@"
+    echo "$(date '+%Y-%m-%d %H:%M:%S') [$level] $message" >> "${CONFIG[LOG_DIR]}/manager.log"
+}
+
+log_info() {
+    log "INFO" "$@"
+}
+
+log_error() {
+    log "ERROR" "$@"
+}
+
+# --------------------------
 # UI Functions
 # --------------------------
 show_header() {
@@ -39,7 +57,7 @@ show_menu() {
     echo "6. Cluster Health Monitor"
     echo "7. Update All Nodes"
     echo "8. Cleanup System"
-    echo "9. Configuration"
+    echo "9. Edit Configuration"
     echo "0. Exit"
     echo "----------------------------------------"
     read -p "Enter choice [0-9]: " choice
@@ -52,7 +70,7 @@ check_dependencies() {
     local deps=("git" "lsof" "curl")
     for dep in "${deps[@]}"; do
         if ! command -v "$dep" &> /dev/null; then
-            echo "Error: Required dependency '$dep' not found"
+            log_error "Required dependency '$dep' not found"
             exit 1
         fi
     done
@@ -71,7 +89,7 @@ find_available_port() {
         fi
         ((port++))
     done
-    echo "Error: No available ports in range"
+    log_error "No available ports in range"
     return 1
 }
 
@@ -79,32 +97,33 @@ setup_node() {
     local node_id=$1
     local node_dir="${CONFIG[BASE_DIR]}/node_${node_id}"
     
-    echo "Setting up node ${node_id}..."
+    log_info "Setting up node ${node_id}..."
     
     # Clone repository if needed
     if [[ ! -d "${node_dir}/.git" ]]; then
         if ! git clone "${CONFIG[REPO_URL]}" "$node_dir"; then
-            echo "Failed to clone repository for node ${node_id}"
+            log_error "Failed to clone repository for node ${node_id}"
             return 1
         fi
     fi
 
     # Update repository
     (
-        cd "$node_dir" || return 1
-        git pull --quiet || return 1
+        cd "$node_dir" || { log_error "Cannot change to directory ${node_dir}"; return 1; }
+        git pull --quiet || { log_error "Failed to pull latest changes for node ${node_id}"; return 1; }
     )
 
     # Configure environment
-    local node_port=$(find_available_port)
+    local node_port
+    node_port=$(find_available_port)
     if [[ $? -ne 0 ]]; then
-        echo "Failed to find port for node ${node_id}"
+        log_error "Failed to find available port for node ${node_id}"
         return 1
     fi
     
     sed "s/^NODE_PORT=.*/NODE_PORT=${node_port}/" "${CONFIG[ENV_TEMPLATE]}" > "${node_dir}/.env"
 
-    echo "Node ${node_id} configured on port ${node_port}"
+    log_info "Node ${node_id} configured on port ${node_port}"
 }
 
 start_node() {
@@ -113,11 +132,11 @@ start_node() {
     local log_file="${CONFIG[LOG_DIR]}/node_${node_id}.log"
     
     (
-        cd "$node_dir" || return 1
+        cd "$node_dir" || { log_error "Cannot change to directory ${node_dir}"; return 1; }
         nohup bash launch.sh >> "$log_file" 2>&1 &
         local pid=$!
         echo "$pid" > "${node_dir}/.pid"
-        echo "Node ${node_id} started (PID: ${pid})"
+        log_info "Node ${node_id} started (PID: ${pid})"
     )
 }
 
@@ -129,13 +148,13 @@ stop_node() {
         local pid=$(< "${node_dir}/.pid")
         if kill -TERM "$pid" 2> /dev/null; then
             rm "${node_dir}/.pid"
-            echo "Node ${node_id} stopped"
+            log_info "Node ${node_id} stopped"
         else
-            echo "Failed to stop node ${node_id}"
+            log_error "Failed to stop node ${node_id}"
             return 1
         fi
     else
-        echo "Node ${node_id} not running"
+        log_info "Node ${node_id} not running"
     fi
 }
 
@@ -145,22 +164,14 @@ stop_node() {
 start_nodes() {
     show_header
     echo "Starting cluster (Batch size: ${CONFIG[BATCH_SIZE]})..."
-    for ((i=0; i<CONFIG[NUM_NODES]; i++)); do
-        ((i%CONFIG[BATCH_SIZE]==0)) && wait
-        setup_node "$i" && start_node "$i" &
-    done
-    wait
+    seq 0 $((CONFIG[NUM_NODES] - 1)) | xargs -n 1 -P "${CONFIG[BATCH_SIZE]}" -I {} bash -c 'setup_node "$@" && start_node "$@"' _ {}
     read -p "Nodes started. Press any key to continue..."
 }
 
 stop_nodes() {
     show_header
     echo "Stopping all nodes..."
-    for ((i=0; i<CONFIG[NUM_NODES]; i++)); do
-        ((i%CONFIG[BATCH_SIZE]==0)) && wait
-        stop_node "$i" &
-    done
-    wait
+    seq 0 $((CONFIG[NUM_NODES] - 1)) | xargs -n 1 -P "${CONFIG[BATCH_SIZE]}" -I {} bash -c 'stop_node "$@"' _ {}
     read -p "Nodes stopped. Press any key to continue..."
 }
 
@@ -209,10 +220,10 @@ health_monitor() {
             if [[ -f "${node_dir}/.pid" ]]; then
                 local pid=$(< "${node_dir}/.pid")
                 if ! ps -p "$pid" > /dev/null; then
-                    echo -e "\e[31mNode ${i} crashed! Restarting...\e[0m"
+                    log_error "Node ${i} crashed! Restarting..."
                     start_node "$i"
                 elif ! curl -s --max-time ${CONFIG[API_TIMEOUT]} "http://localhost:${port}/health" > /dev/null; then
-                    echo -e "\e[33mNode ${i} unresponsive! Restarting...\e[0m"
+                    log_error "Node ${i} unresponsive! Restarting..."
                     stop_node "$i"
                     start_node "$i"
                 fi
@@ -227,7 +238,7 @@ health_monitor() {
 # System Functions
 # --------------------------
 cleanup() {
-    echo "Cleaning up..."
+    log_info "Cleaning up..."
     for ((i=0; i<CONFIG[NUM_NODES]; i++)); do
         local node_dir="${CONFIG[BASE_DIR]}/node_${i}"
         if [[ -f "${node_dir}/.pid" ]]; then
@@ -241,16 +252,20 @@ cleanup() {
 update_nodes() {
     show_header
     echo "Updating all nodes..."
-    for ((i=0; i<CONFIG[NUM_NODES]; i++)); do
-        local node_dir="${CONFIG[BASE_DIR]}/node_${i}"
-        (
-            cd "$node_dir" || return
-            git pull --quiet && echo "Node ${i} updated"
-        ) &
-        ((i%CONFIG[BATCH_SIZE]==0)) && wait
-    done
-    wait
+    seq 0 $((CONFIG[NUM_NODES] - 1)) | xargs -n 1 -P "${CONFIG[BATCH_SIZE]}" -I {} bash -c 'cd "${CONFIG[BASE_DIR]}/node_{}" && git pull --quiet && log_info "Node {} updated"' _ {}
     read -p "Update completed. Press any key to continue..."
+}
+
+edit_config() {
+    show_header
+    echo "Edit Configuration:"
+    for key in "${!CONFIG[@]}"; do
+        read -p "$key (${CONFIG[$key]}): " new_value
+        if [[ -n "$new_value" ]]; then
+            CONFIG[$key]=$new_value
+        fi
+    done
+    read -p "Configuration updated. Press any key to continue..."
 }
 
 # --------------------------
@@ -269,7 +284,7 @@ main_menu() {
             6) health_monitor ;;
             7) update_nodes ;;
             8) cleanup ;;
-            9) exit 0 ;;
+            9) edit_config ;;
             0) cleanup; exit 0 ;;
             *) echo "Invalid option"; sleep 1 ;;
         esac
