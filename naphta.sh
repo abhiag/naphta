@@ -1,4 +1,4 @@
-#!/bin/bash 
+#!/usr/bin/env bash
 
 # NapthaAI Cluster Manager v3.0
 # Full featured management system with menu interface
@@ -7,34 +7,16 @@
 # Configuration
 # --------------------------
 declare -A CONFIG=(
-    [NUM_NODES]=100             # Number of nodes to launch
-    [START_PORT]=8070           # Base port number (updated as requested)
-    [BASE_DIR]="naptha_nodes"   # Parent directory for nodes
+    [NUM_NODES]=4                # Restrict to 4 nodes
+    [START_PORT]=8070            # Base port number
+    [BASE_DIR]="naptha_nodes"    # Parent directory for nodes
     [REPO_URL]="https://github.com/NapthaAI/naptha-node.git"
-    [ENV_TEMPLATE]=".env"       # Template environment file
-    [BATCH_SIZE]=10             # Nodes to process simultaneously
-    [LOG_DIR]="logs"            # Centralized log directory
-    [CHECK_INTERVAL]=5          # Health check interval in seconds
-    [API_TIMEOUT]=2             # API response timeout
+    [ENV_TEMPLATE]=".env"        # Template environment file
+    [BATCH_SIZE]=4               # Nodes to process simultaneously
+    [LOG_DIR]="logs"             # Centralized log directory
+    [CHECK_INTERVAL]=5           # Health check interval in seconds
+    [API_TIMEOUT]=2              # API response timeout
 )
-
-# --------------------------
-# Logging Functions
-# --------------------------
-log() {
-    local level=$1
-    shift
-    local message="$@"
-    echo "$(date '+%Y-%m-%d %H:%M:%S') [$level] $message" >> "${CONFIG[LOG_DIR]}/manager.log"
-}
-
-log_info() {
-    log "INFO" "$@"
-}
-
-log_error() {
-    log "ERROR" "$@"
-}
 
 # --------------------------
 # UI Functions
@@ -49,15 +31,15 @@ show_header() {
 }
 
 show_menu() {
-    echo "1. Start All Nodes"
-    echo "2. Stop All Nodes"
-    echo "3. Restart All Nodes"
-    echo "4. Check Node Status"
-    echo "5. View Node Logs"
-    echo "6. Cluster Health Monitor"
-    echo "7. Update All Nodes"
-    echo "8. Cleanup System"
-    echo "9. Edit Configuration"
+    echo "1. Install Node"
+    echo "2. Start All Nodes"
+    echo "3. Stop All Nodes"
+    echo "4. Restart All Nodes"
+    echo "5. Check Node Status"
+    echo "6. View Node Logs"
+    echo "7. Cluster Health Monitor"
+    echo "8. Update All Nodes"
+    echo "9. Cleanup System"
     echo "0. Exit"
     echo "----------------------------------------"
     read -p "Enter choice [0-9]: " choice
@@ -70,7 +52,7 @@ check_dependencies() {
     local deps=("git" "lsof" "curl")
     for dep in "${deps[@]}"; do
         if ! command -v "$dep" &> /dev/null; then
-            log_error "Required dependency '$dep' not found"
+            echo "Error: Required dependency '$dep' not found"
             exit 1
         fi
     done
@@ -89,7 +71,7 @@ find_available_port() {
         fi
         ((port++))
     done
-    log_error "No available ports in range"
+    echo "Error: No available ports in range"
     return 1
 }
 
@@ -97,33 +79,60 @@ setup_node() {
     local node_id=$1
     local node_dir="${CONFIG[BASE_DIR]}/node_${node_id}"
     
-    log_info "Setting up node ${node_id}..."
+    echo "Setting up node ${node_id}..."
     
     # Clone repository if needed
     if [[ ! -d "${node_dir}/.git" ]]; then
         if ! git clone "${CONFIG[REPO_URL]}" "$node_dir"; then
-            log_error "Failed to clone repository for node ${node_id}"
+            echo "Failed to clone repository for node ${node_id}"
             return 1
         fi
     fi
 
     # Update repository
     (
-        cd "$node_dir" || { log_error "Cannot change to directory ${node_dir}"; return 1; }
-        git pull --quiet || { log_error "Failed to pull latest changes for node ${node_id}"; return 1; }
+        cd "$node_dir" || return 1
+        git pull --quiet || return 1
     )
 
     # Configure environment
-    local node_port
-    node_port=$(find_available_port)
+    local node_port=$(find_available_port)
     if [[ $? -ne 0 ]]; then
-        log_error "Failed to find available port for node ${node_id}"
+        echo "Failed to find port for node ${node_id}"
         return 1
     fi
     
     sed "s/^NODE_PORT=.*/NODE_PORT=${node_port}/" "${CONFIG[ENV_TEMPLATE]}" > "${node_dir}/.env"
 
-    log_info "Node ${node_id} configured on port ${node_port}"
+    echo "Node ${node_id} configured on port ${node_port}"
+}
+
+install_node() {
+    show_header
+    echo "Installing a new node..."
+
+    # Check if the maximum number of nodes is already reached
+    local existing_nodes=$(ls -1 "${CONFIG[BASE_DIR]}" 2>/dev/null | wc -l)
+    if [[ $existing_nodes -ge ${CONFIG[NUM_NODES]} ]]; then
+        echo "Error: Maximum number of nodes (${CONFIG[NUM_NODES]}) already installed."
+        read -p "Press any key to continue..."
+        return
+    fi
+
+    # Find the next available node ID
+    local node_id=0
+    while [[ -d "${CONFIG[BASE_DIR]}/node_${node_id}" ]]; do
+        ((node_id++))
+    done
+
+    # Set up the new node
+    if setup_node "$node_id"; then
+        echo "Node ${node_id} installed successfully."
+    else
+        echo "Failed to install node ${node_id}."
+    fi
+
+    read -p "Press any key to continue..."
 }
 
 start_node() {
@@ -132,11 +141,11 @@ start_node() {
     local log_file="${CONFIG[LOG_DIR]}/node_${node_id}.log"
     
     (
-        cd "$node_dir" || { log_error "Cannot change to directory ${node_dir}"; return 1; }
+        cd "$node_dir" || return 1
         nohup bash launch.sh >> "$log_file" 2>&1 &
         local pid=$!
         echo "$pid" > "${node_dir}/.pid"
-        log_info "Node ${node_id} started (PID: ${pid})"
+        echo "Node ${node_id} started (PID: ${pid})"
     )
 }
 
@@ -148,13 +157,13 @@ stop_node() {
         local pid=$(< "${node_dir}/.pid")
         if kill -TERM "$pid" 2> /dev/null; then
             rm "${node_dir}/.pid"
-            log_info "Node ${node_id} stopped"
+            echo "Node ${node_id} stopped"
         else
-            log_error "Failed to stop node ${node_id}"
+            echo "Failed to stop node ${node_id}"
             return 1
         fi
     else
-        log_info "Node ${node_id} not running"
+        echo "Node ${node_id} not running"
     fi
 }
 
@@ -164,14 +173,26 @@ stop_node() {
 start_nodes() {
     show_header
     echo "Starting cluster (Batch size: ${CONFIG[BATCH_SIZE]})..."
-    seq 0 $((CONFIG[NUM_NODES] - 1)) | xargs -n 1 -P "${CONFIG[BATCH_SIZE]}" -I {} bash -c 'setup_node "$@" && start_node "$@"' _ {}
+    for ((i=0; i<CONFIG[NUM_NODES]; i++)); do
+        if [[ -d "${CONFIG[BASE_DIR]}/node_${i}" ]]; then
+            ((i%CONFIG[BATCH_SIZE]==0)) && wait
+            start_node "$i" &
+        fi
+    done
+    wait
     read -p "Nodes started. Press any key to continue..."
 }
 
 stop_nodes() {
     show_header
     echo "Stopping all nodes..."
-    seq 0 $((CONFIG[NUM_NODES] - 1)) | xargs -n 1 -P "${CONFIG[BATCH_SIZE]}" -I {} bash -c 'stop_node "$@"' _ {}
+    for ((i=0; i<CONFIG[NUM_NODES]; i++)); do
+        if [[ -d "${CONFIG[BASE_DIR]}/node_${i}" ]]; then
+            ((i%CONFIG[BATCH_SIZE]==0)) && wait
+            stop_node "$i" &
+        fi
+    done
+    wait
     read -p "Nodes stopped. Press any key to continue..."
 }
 
@@ -179,22 +200,24 @@ node_status() {
     show_header
     echo "Node Status (Ports ${CONFIG[START_PORT]}-$((CONFIG[START_PORT] + CONFIG[NUM_NODES] - 1))):"
     for ((i=0; i<CONFIG[NUM_NODES]; i++)); do
-        local node_dir="${CONFIG[BASE_DIR]}/node_${i}"
-        local status="\e[31mDown\e[0m"
-        local port="N/A"
-        local pid=""
-        
-        if [[ -f "${node_dir}/.pid" ]]; then
-            pid=$(< "${node_dir}/.pid")
-            if ps -p "$pid" > /dev/null; then
-                status="\e[32mRunning\e[0m"
-                port=$(grep "NODE_PORT" "${node_dir}/.env" | cut -d= -f2)
-            else
-                status="\e[33mZombie\e[0m"
+        if [[ -d "${CONFIG[BASE_DIR]}/node_${i}" ]]; then
+            local node_dir="${CONFIG[BASE_DIR]}/node_${i}"
+            local status="\e[31mDown\e[0m"
+            local port="N/A"
+            local pid=""
+            
+            if [[ -f "${node_dir}/.pid" ]]; then
+                pid=$(< "${node_dir}/.pid")
+                if ps -p "$pid" > /dev/null; then
+                    status="\e[32mRunning\e[0m"
+                    port=$(grep "NODE_PORT" "${node_dir}/.env" | cut -d= -f2)
+                else
+                    status="\e[33mZombie\e[0m"
+                fi
             fi
+            
+            printf "Node %03d: %b  Port: %-5s PID: %-6s\n" "$i" "$status" "$port" "$pid"
         fi
-        
-        printf "Node %03d: %b  Port: %-5s PID: %-6s\n" "$i" "$status" "$port" "$pid"
     done
     read -p "Press any key to continue..."
 }
@@ -203,7 +226,11 @@ view_logs() {
     show_header
     read -p "Enter node number [0-$((CONFIG[NUM_NODES]-1))]: " node_num
     if [[ $node_num -ge 0 && $node_num -lt ${CONFIG[NUM_NODES]} ]]; then
-        less "${CONFIG[LOG_DIR]}/node_${node_num}.log"
+        if [[ -d "${CONFIG[BASE_DIR]}/node_${node_num}" ]]; then
+            less "${CONFIG[LOG_DIR]}/node_${node_num}.log"
+        else
+            read -p "Node ${node_num} does not exist! Press any key to continue..."
+        fi
     else
         read -p "Invalid node number! Press any key to continue..."
     fi
@@ -214,21 +241,23 @@ health_monitor() {
     echo "Starting health monitor (Interval: ${CONFIG[CHECK_INTERVAL]}s)..."
     while true; do
         for ((i=0; i<CONFIG[NUM_NODES]; i++)); do
-            local node_dir="${CONFIG[BASE_DIR]}/node_${i}"
-            local port=$(grep "NODE_PORT" "${node_dir}/.env" | cut -d= -f2)
-            
-            if [[ -f "${node_dir}/.pid" ]]; then
-                local pid=$(< "${node_dir}/.pid")
-                if ! ps -p "$pid" > /dev/null; then
-                    log_error "Node ${i} crashed! Restarting..."
-                    start_node "$i"
-                elif ! curl -s --max-time ${CONFIG[API_TIMEOUT]} "http://localhost:${port}/health" > /dev/null; then
-                    log_error "Node ${i} unresponsive! Restarting..."
-                    stop_node "$i"
-                    start_node "$i"
+            if [[ -d "${CONFIG[BASE_DIR]}/node_${i}" ]]; then
+                local node_dir="${CONFIG[BASE_DIR]}/node_${i}"
+                local port=$(grep "NODE_PORT" "${node_dir}/.env" | cut -d= -f2)
+                
+                if [[ -f "${node_dir}/.pid" ]]; then
+                    local pid=$(< "${node_dir}/.pid")
+                    if ! ps -p "$pid" > /dev/null; then
+                        echo -e "\e[31mNode ${i} crashed! Restarting...\e[0m"
+                        start_node "$i"
+                    elif ! curl -s --max-time ${CONFIG[API_TIMEOUT]} "http://localhost:${port}/health" > /dev/null; then
+                        echo -e "\e[33mNode ${i} unresponsive! Restarting...\e[0m"
+                        stop_node "$i"
+                        start_node "$i"
+                    fi
                 fi
+                ((i%CONFIG[BATCH_SIZE]==0)) && wait
             fi
-            ((i%CONFIG[BATCH_SIZE]==0)) && wait
         done
         sleep "${CONFIG[CHECK_INTERVAL]}"
     done
@@ -238,12 +267,14 @@ health_monitor() {
 # System Functions
 # --------------------------
 cleanup() {
-    log_info "Cleaning up..."
+    echo "Cleaning up..."
     for ((i=0; i<CONFIG[NUM_NODES]; i++)); do
-        local node_dir="${CONFIG[BASE_DIR]}/node_${i}"
-        if [[ -f "${node_dir}/.pid" ]]; then
-            local pid=$(< "${node_dir}/.pid")
-            kill -TERM "$pid" 2> /dev/null
+        if [[ -d "${CONFIG[BASE_DIR]}/node_${i}" ]]; then
+            local node_dir="${CONFIG[BASE_DIR]}/node_${i}"
+            if [[ -f "${node_dir}/.pid" ]]; then
+                local pid=$(< "${node_dir}/.pid")
+                kill -TERM "$pid" 2> /dev/null
+            fi
         fi
     done
     exit 0
@@ -252,20 +283,18 @@ cleanup() {
 update_nodes() {
     show_header
     echo "Updating all nodes..."
-    seq 0 $((CONFIG[NUM_NODES] - 1)) | xargs -n 1 -P "${CONFIG[BATCH_SIZE]}" -I {} bash -c 'cd "${CONFIG[BASE_DIR]}/node_{}" && git pull --quiet && log_info "Node {} updated"' _ {}
-    read -p "Update completed. Press any key to continue..."
-}
-
-edit_config() {
-    show_header
-    echo "Edit Configuration:"
-    for key in "${!CONFIG[@]}"; do
-        read -p "$key (${CONFIG[$key]}): " new_value
-        if [[ -n "$new_value" ]]; then
-            CONFIG[$key]=$new_value
+    for ((i=0; i<CONFIG[NUM_NODES]; i++)); do
+        if [[ -d "${CONFIG[BASE_DIR]}/node_${i}" ]]; then
+            local node_dir="${CONFIG[BASE_DIR]}/node_${i}"
+            (
+                cd "$node_dir" || return
+                git pull --quiet && echo "Node ${i} updated"
+            ) &
+            ((i%CONFIG[BATCH_SIZE]==0)) && wait
         fi
     done
-    read -p "Configuration updated. Press any key to continue..."
+    wait
+    read -p "Update completed. Press any key to continue..."
 }
 
 # --------------------------
@@ -276,15 +305,15 @@ main_menu() {
         show_header
         show_menu
         case $choice in
-            1) start_nodes ;;
-            2) stop_nodes ;;
-            3) stop_nodes; start_nodes ;;
-            4) node_status ;;
-            5) view_logs ;;
-            6) health_monitor ;;
-            7) update_nodes ;;
-            8) cleanup ;;
-            9) edit_config ;;
+            1) install_node ;;
+            2) start_nodes ;;
+            3) stop_nodes ;;
+            4) stop_nodes; start_nodes ;;
+            5) node_status ;;
+            6) view_logs ;;
+            7) health_monitor ;;
+            8) update_nodes ;;
+            9) cleanup ;;
             0) cleanup; exit 0 ;;
             *) echo "Invalid option"; sleep 1 ;;
         esac
