@@ -127,38 +127,61 @@ setup_node() {
         echo "Failed to find port for node ${node_id}"
         return 1
     fi
-    
-    sed "s/^NODE_PORT=.*/NODE_PORT=${node_port}/" "${CONFIG[ENV_TEMPLATE]}" > "${node_dir}/.env"
+
+    # Create .env file if it doesn't exist
+    if [[ ! -f "${CONFIG[ENV_TEMPLATE]}" ]]; then
+        echo "Creating default .env file..."
+        echo "NODE_PORT=${node_port}" > "${node_dir}/.env"
+        echo "Other environment variables can be added here" >> "${node_dir}/.env"
+    else
+        # Use the template .env file
+        sed "s/^NODE_PORT=.*/NODE_PORT=${node_port}/" "${CONFIG[ENV_TEMPLATE]}" > "${node_dir}/.env"
+    fi
 
     echo "Node ${node_id} configured on port ${node_port}"
 }
 
 install_node() {
     show_header
-    echo "Installing a new node..."
+    echo "Installing New Nodes"
 
-    # Check if the maximum number of nodes is already reached
+    # Calculate existing nodes and available slots
     local existing_nodes=$(ls -1 "${CONFIG[BASE_DIR]}" 2>/dev/null | wc -l)
-    if [[ $existing_nodes -ge ${CONFIG[NUM_NODES]} ]]; then
-        echo "Error: Maximum number of nodes (${CONFIG[NUM_NODES]}) already installed."
+    local max_install=$((CONFIG[NUM_NODES] - existing_nodes))
+    
+    if [[ $max_install -le 0 ]]; then
+        echo "Error: Maximum capacity of ${CONFIG[NUM_NODES]} nodes already reached!"
         read -p "Press any key to continue..."
         return
     fi
 
-    # Find the next available node ID
-    local node_id=0
-    while [[ -d "${CONFIG[BASE_DIR]}/node_${node_id}" ]]; do
-        ((node_id++))
+    # Get user input with validation
+    while true; do
+        read -p "How many nodes to install? (1-$max_install): " num_nodes
+        if [[ "$num_nodes" =~ ^[0-9]+$ ]] && [[ $num_nodes -ge 1 && $num_nodes -le $max_install ]]; then
+            break
+        fi
+        echo "Invalid input! Please enter a number between 1 and $max_install"
     done
 
-    # Set up the new node
-    if setup_node "$node_id"; then
-        echo "Node ${node_id} installed successfully."
-    else
-        echo "Failed to install node ${node_id}."
-    fi
+    # Install nodes in batches
+    echo "Installing $num_nodes nodes..."
+    for ((i=0; i<num_nodes; i++)); do
+        # Find next available node ID
+        local node_id=0
+        while [[ -d "${CONFIG[BASE_DIR]}/node_${node_id}" ]]; do
+            ((node_id++))
+        done
 
-    read -p "Press any key to continue..."
+        # Set up node
+        if setup_node "$node_id"; then
+            echo "Node $node_id installed successfully"
+        else
+            echo "Failed to install node $node_id"
+        fi
+    done
+
+    read -p "Installation complete. Press any key to continue..."
 }
 
 start_node() {
