@@ -50,12 +50,38 @@ show_menu() {
 # --------------------------
 check_dependencies() {
     local deps=("git" "lsof" "curl")
+    local install_cmd=""
+
+    # Determine the package manager
+    if command -v apt-get &> /dev/null; then
+        install_cmd="sudo apt-get install -y"
+    elif command -v yum &> /dev/null; then
+        install_cmd="sudo yum install -y"
+    elif command -v dnf &> /dev/null; then
+        install_cmd="sudo dnf install -y"
+    elif command -v pacman &> /dev/null; then
+        install_cmd="sudo pacman -S --noconfirm"
+    elif command -v zypper &> /dev/null; then
+        install_cmd="sudo zypper install -y"
+    elif command -v brew &> /dev/null; then
+        install_cmd="brew install"
+    else
+        echo "Error: No supported package manager found. Please install the following dependencies manually: ${deps[*]}"
+        exit 1
+    fi
+
+    # Check and install dependencies
     for dep in "${deps[@]}"; do
         if ! command -v "$dep" &> /dev/null; then
-            echo "Error: Required dependency '$dep' not found"
-            exit 1
+            echo "Installing missing dependency: $dep..."
+            if ! $install_cmd "$dep"; then
+                echo "Error: Failed to install $dep. Please install it manually."
+                exit 1
+            fi
         fi
     done
+
+    echo "All dependencies are installed."
 }
 
 is_port_available() {
